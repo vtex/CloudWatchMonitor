@@ -1,35 +1,29 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.ServiceProcess;
-using System.Text;
 using System.Threading;
 using System.Configuration;
+using Amazon.CloudWatch.Model;
 
 namespace CloudWatchMonitor
 {
 	public partial class MonitorService : ServiceBase
 	{
 		// Constants
-		const string CloudWatchNamespace = "System/Windows";
+		const string CLOUD_WATCH_NAMESPACE = "System/Windows";
 
 		// When we run as a service, we want errors
 		// to be directed to an event log
-		EventLog _eventLog = null;
+		EventLog _eventLog;
 
 		// The event upon which we wait for our signal to stop
 		// the service.
-		ManualResetEvent _evStop = new ManualResetEvent(false);
+	    readonly ManualResetEvent _evStop = new ManualResetEvent(false);
 
-		// Amazon Access Key and Secret Access Key.
-		// Will be read from .config file
-		string _amazonAccessKeyId;
-		string _amazonSecretAccessKey;
-
-		// Instance ID of the current running instance.
+	    // Instance ID of the current running instance.
 		// Will be populated by communicating with metadata server.
 		string _instanceId;
 
@@ -45,17 +39,16 @@ namespace CloudWatchMonitor
 		protected override void OnStart(string[] args)
 		{
 			// Since we are running as a service, setup an event log
-			string eventLogSource = "DiskSpaceCloudWatchMonitor";
+			var eventLogSource = "DiskSpaceCloudWatchMonitor";
 			if (!EventLog.SourceExists(eventLogSource))
 			{
 				// Requires to be administrator for this to succeed
 				EventLog.CreateEventSource(eventLogSource, "Eleven41");
 			}
-			_eventLog = new EventLog();
-			_eventLog.Source = eventLogSource;
+			_eventLog = new EventLog {Source = eventLogSource};
 
-			// Start our main worker thread
-			new System.Threading.Thread(new ThreadStart(Run)).Start();
+		    // Start our main worker thread
+			new Thread(Run).Start();
 
 			// When we leave here, our service will be running
 
@@ -80,10 +73,6 @@ namespace CloudWatchMonitor
 			{
 				Console.WriteLine(message, args);
 			}
-			else
-			{
-				// Don't forward informational messages to the event log
-			}
 		}
 
 		private void Error(string message, params Object[] args)
@@ -92,24 +81,22 @@ namespace CloudWatchMonitor
 			// send the message to the event log, otherwise
 			// forward to the console.
 			if (_eventLog == null)
-			{
 				Console.WriteLine("E:" + message, args);
-			}
 			else
 			{
-				string finalMessage = String.Format(message, args);
+				var finalMessage = String.Format(message, args);
 				_eventLog.WriteEntry(finalMessage, EventLogEntryType.Error);
 			}
 		}
 
 		private bool ReadBoolean(string name, bool defaultValue)
 		{
-			string temp = ConfigurationManager.AppSettings[name];
+			var temp = ConfigurationManager.AppSettings[name];
 			if (String.IsNullOrEmpty(temp))
 				return defaultValue;
 				
 
-			bool result = false;
+			bool result;
 			if (!Boolean.TryParse(temp, out result))
 				throw new Exception(String.Format("{0} must be True or False: {1}", name, temp));
 			
@@ -118,11 +105,11 @@ namespace CloudWatchMonitor
 
 		private int ReadInt(string name, int defaultValue)
 		{
-			string temp = ConfigurationManager.AppSettings[name];
+			var temp = ConfigurationManager.AppSettings[name];
 			if (String.IsNullOrEmpty(temp))
 				return defaultValue;
 
-			int result = 0;
+			int result;
 			if (!Int32.TryParse(temp, out result))
 				throw new Exception(String.Format("{0} must be a number: {1}", name, temp));
 
@@ -131,19 +118,17 @@ namespace CloudWatchMonitor
 
 		private string ReadString(string name, string defaultValue)
 		{
-			string temp = ConfigurationManager.AppSettings[name];
-			if (String.IsNullOrEmpty(temp))
-				return defaultValue;
-			return temp;
+			var temp = ConfigurationManager.AppSettings[name];
+			return String.IsNullOrEmpty(temp) ? defaultValue : temp;
 		}
 
 		private List<string> ReadStringList(string name, List<string> defaultValue)
 		{
-			string temp = ConfigurationManager.AppSettings[name];
+			var temp = ConfigurationManager.AppSettings[name];
 			if (String.IsNullOrEmpty(temp))
 				return defaultValue;
 
-			string[] values = temp.Split(',');
+			var values = temp.Split(',');
 			return values.Select(s => s.Trim()).Where(s => !String.IsNullOrEmpty(s)).ToList();
 		}
 
@@ -170,7 +155,7 @@ namespace CloudWatchMonitor
 			Info("CloudWatch Monitor starting");
 			
 			// Default monitor period is 1 minute
-			int monitorPeriodInMinutes = 1;
+			var monitorPeriodInMinutes = 1;
 
 			try
 			{
@@ -260,14 +245,9 @@ namespace CloudWatchMonitor
 				return;
 			}
 
-			// Read the Amazon access key information from the config file.
-			// Amazon will validate this later.
-			_amazonAccessKeyId = ConfigurationManager.AppSettings["Amazon.AccessKeyId"];
-			_amazonSecretAccessKey = ConfigurationManager.AppSettings["Amazon.SecretAccessKey"];
-
-			while (true)
+		    while (true)
 			{
-				DateTime updateBegin = DateTime.Now;
+				var updateBegin = DateTime.Now;
 
 				try 
 				{	        
@@ -276,16 +256,13 @@ namespace CloudWatchMonitor
 				catch (Exception e)
 				{
 					Error("Error submitting metrics: {0}", e.Message);
-
-					// Ignore the error and continue
 				}
 
-				DateTime updateEnd = DateTime.Now;
-				TimeSpan updateDiff = (updateEnd - updateBegin);
+				var updateEnd = DateTime.Now;
+				var updateDiff = (updateEnd - updateBegin);
+				var baseTimeSpan = TimeSpan.FromMinutes(monitorPeriodInMinutes);
+				var timeToWait = (baseTimeSpan - updateDiff);
 
-				TimeSpan baseTimeSpan = TimeSpan.FromMinutes(monitorPeriodInMinutes);
-
-				TimeSpan timeToWait = (baseTimeSpan - updateDiff);
 				if (timeToWait.TotalMilliseconds < 50)
 					timeToWait = TimeSpan.FromMilliseconds(50);
 
@@ -308,14 +285,14 @@ namespace CloudWatchMonitor
 			if (!PopulateRegion())
 				return;
 
-			List<Amazon.CloudWatch.Model.MetricDatum> metrics = new List<Amazon.CloudWatch.Model.MetricDatum>();
+			var metrics = new List<MetricDatum>();
 			
 			if (_isSubmitDiskSpaceAvailable ||
 				_isSubmitDiskSpaceUsed ||
 				_isSubmitDiskSpaceUtilization)
 			{
 				// Get the list of drives from the system
-				var drives = System.IO.DriveInfo.GetDrives();
+				var drives = DriveInfo.GetDrives();
 				foreach (var drive in drives)
 				{
 					AddDriveMetrics(drive, metrics);
@@ -337,44 +314,43 @@ namespace CloudWatchMonitor
 
 			Info("\tSubmitting metric data");
 
-			for (int skip = 0; ; skip += 20)
+			for (var skip = 0; ; skip += 20)
 			{
-				var metricsThisRound = metrics.Skip(skip).Take(20);
-				if (metricsThisRound.Count() == 0)
+				var metricsThisRound = metrics.Skip(skip).Take(20).ToArray();
+				if (!metricsThisRound.Any())
 					break;
 
-				var request = new Amazon.CloudWatch.Model.PutMetricDataRequest()
-					.WithNamespace(CloudWatchNamespace)
-					.WithMetricData(metricsThisRound);
+			    var request = new PutMetricDataRequest
+			    {
+			        Namespace = CLOUD_WATCH_NAMESPACE,
+			        MetricData = metricsThisRound.ToList()
+			    };
 				var client = CreateClient();
-				var response = client.PutMetricData(request);
+				client.PutMetricData(request);
 			}
-
-			// We don't care about the response
-
 			Info("Done.");
 		}
 
-		private Amazon.CloudWatch.AmazonCloudWatch CreateClient()
+        private Amazon.CloudWatch.AmazonCloudWatchClient CreateClient()
 		{
 			// Submit in the region that the instance is local to
-			var config = new Amazon.CloudWatch.AmazonCloudWatchConfig()
+			var config = new Amazon.CloudWatch.AmazonCloudWatchConfig
 			{
 				ServiceURL = String.Format("http://monitoring.{0}.amazonaws.com", _region)
 			};
-			return new Amazon.CloudWatch.AmazonCloudWatchClient(_amazonAccessKeyId, _amazonSecretAccessKey, config);
+			return new Amazon.CloudWatch.AmazonCloudWatchClient(config);
 		}
 
-		private void SubmitMemoryMetrics(List<Amazon.CloudWatch.Model.MetricDatum> metrics)
+		private void SubmitMemoryMetrics(List<MetricDatum> metrics)
 		{
 			Info("Adding memory metrics");
 
-			var dimensions = new List<Amazon.CloudWatch.Model.Dimension>();
-			dimensions.Add(new Amazon.CloudWatch.Model.Dimension()
-				.WithName("InstanceId")
-				.WithValue(_instanceId));
+			var dimensions = new List<Dimension>
+			{
+			    new Dimension { Name = "InstanceId", Value = _instanceId }
+			};
 
-								// Why is this in a visual basic namespace?
+		    // Why is this in a visual basic namespace?
 			var computerInfo = new Microsoft.VisualBasic.Devices.ComputerInfo();
 
 			double availablePhysicalMemory = computerInfo.AvailablePhysicalMemory;
@@ -387,31 +363,37 @@ namespace CloudWatchMonitor
 			if (_isSubmitPhysicalMemoryUsed)
 			{
 				Info("\tPhysical Memory Used: {0:N0} bytes", physicalMemoryUsed);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("PhysicalMemoryUsed")
-							.WithUnit("Bytes")
-							.WithValue(physicalMemoryUsed)
-							.WithDimensions(dimensions));
+			    metrics.Add(new MetricDatum
+			    {
+			        MetricName = "PhysicalMemoryUsed",
+			        Unit = "Bytes",
+			        Value = physicalMemoryUsed,
+			        Dimensions = dimensions
+			    });
 			}
 
 			if (_isSubmitPhysicalMemoryAvailable)
 			{
 				Info("\tAvailable Physical Memory: {0:N0} bytes", availablePhysicalMemory);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("PhysicalMemoryAvailable")
-							.WithUnit("Bytes")
-							.WithValue(availablePhysicalMemory)
-							.WithDimensions(dimensions));
+			    metrics.Add(new MetricDatum
+			    {
+			        MetricName = "PhysicalMemoryAvailable",
+			        Unit = "Bytes",
+			        Value = physicalMemoryUsed,
+			        Dimensions = dimensions
+			    });
 			}
 
 			if (_isSubmitPhysicalMemoryUtilization)
 			{
 				Info("\tPhysical Memory Utilization: {0:F1}%", physicalMemoryUtilized);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("PhysicalMemoryUtilization")
-							.WithUnit("Percent")
-							.WithValue(physicalMemoryUtilized)
-							.WithDimensions(dimensions));
+			    metrics.Add(new MetricDatum
+			    {
+			        MetricName = "PhysicalMemoryUtilization",
+			        Unit = "Bytes",
+			        Value = physicalMemoryUsed,
+			        Dimensions = dimensions
+			    });
 			}
 
 			double availableVirtualMemory = computerInfo.AvailableVirtualMemory;
@@ -424,31 +406,38 @@ namespace CloudWatchMonitor
 			if (_isSubmitVirtualMemoryUsed)
 			{
 				Info("\tVirtual Memory Used: {0:N0} bytes", physicalMemoryUsed);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("VirtualMemoryUsed")
-							.WithUnit("Bytes")
-							.WithValue(virtualMemoryUsed)
-							.WithDimensions(dimensions));
+			    metrics.Add(new MetricDatum
+			    {
+			        MetricName = "VirtualMemoryUsed",
+			        Unit = "Bytes",
+			        Value = physicalMemoryUsed,
+			        Dimensions = dimensions
+			    });
 			}
 
 			if (_isSubmitVirtualMemoryAvailable)
 			{
 				Info("\tAvailable Virtual Memory: {0:N0} bytes", availableVirtualMemory);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("VirtualMemoryAvailable")
-							.WithUnit("Bytes")
-							.WithValue(availableVirtualMemory)
-							.WithDimensions(dimensions));
+			    metrics.Add(new MetricDatum
+			    {
+			        MetricName = "VirtualMemoryAvailable",
+			        Unit = "Bytes",
+			        Value = availableVirtualMemory,
+			        Dimensions = dimensions
+			    });
 			}
 
 			if (_isSubmitVirtualMemoryUtilization)
 			{
 				Info("\tVirtual Memory Utilization: {0:F1}%", virtualMemoryUtilized);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("VirtualMemoryUtilization")
-							.WithUnit("Percent")
-							.WithValue(virtualMemoryUtilized)
-							.WithDimensions(dimensions));
+				
+                metrics.Add(new MetricDatum
+			    {
+			        MetricName = "VirtualMemoryAvailable",
+			        Unit = "Percent",
+			        Value = virtualMemoryUtilized,
+			        Dimensions = dimensions
+			    });
 			}
 
 			double availableMemory = availablePhysicalMemory + availableVirtualMemory;
@@ -461,35 +450,41 @@ namespace CloudWatchMonitor
 			if (_isSubmitMemoryUsed)
 			{
 				Info("\tMemory Used: {0:N0} bytes", physicalMemoryUsed);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("MemoryUsed")
-							.WithUnit("Bytes")
-							.WithValue(memoryUsed)
-							.WithDimensions(dimensions));
+                metrics.Add(new MetricDatum
+                {
+                    MetricName = "MemoryUsed",
+                    Unit = "Bytes",
+                    Value = memoryUsed,
+                    Dimensions = dimensions
+                });
 			}
 
 			if (_isSubmitMemoryAvailable)
 			{
 				Info("\tAvailable Memory: {0:N0} bytes", availableMemory);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("MemoryAvailable")
-							.WithUnit("Bytes")
-							.WithValue(availableMemory)
-							.WithDimensions(dimensions));
+                metrics.Add(new MetricDatum
+                {
+                    MetricName = "MemoryAvailable",
+                    Unit = "Bytes",
+                    Value = availableMemory,
+                    Dimensions = dimensions
+                });
 			}
 
 			if (_isSubmitMemoryUtilization)
 			{
 				Info("\tMemory Utilization: {0:F1}%", memoryUtilized);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("MemoryUtilization")
-							.WithUnit("Percent")
-							.WithValue(memoryUtilized)
-							.WithDimensions(dimensions));
+                metrics.Add(new MetricDatum
+                {
+                    MetricName = "MemoryUtilization",
+                    Unit = "Percent",
+                    Value = memoryUtilized,
+                    Dimensions = dimensions
+                });
 			}
 		}
 
-		private void AddDriveMetrics(System.IO.DriveInfo drive, List<Amazon.CloudWatch.Model.MetricDatum> metrics)
+		private void AddDriveMetrics(DriveInfo drive, List<MetricDatum> metrics)
 		{
 			string driveName = String.Format("{0}", drive.Name[0]);
 
@@ -517,15 +512,13 @@ namespace CloudWatchMonitor
 				return;
 			}
 
-			var dimensions = new List<Amazon.CloudWatch.Model.Dimension>();
-			dimensions.Add(new Amazon.CloudWatch.Model.Dimension()
-				.WithName("InstanceId")
-				.WithValue(_instanceId));
-			dimensions.Add(new Amazon.CloudWatch.Model.Dimension()
-				.WithName("Drive")
-				.WithValue(driveName));
+			var dimensions = new List<Dimension>
+			{
+			    new Dimension {Name = "InstanceID", Value = _instanceId},
+			    new Dimension {Name = "Drive", Value = driveName}
+			};
 
-			long spaceAvailable = drive.AvailableFreeSpace;
+		    long spaceAvailable = drive.AvailableFreeSpace;
 			long totalSize = drive.TotalSize;
 			long spaceUsed = drive.TotalSize - drive.AvailableFreeSpace;
 			double diskUtilized;
@@ -542,31 +535,37 @@ namespace CloudWatchMonitor
 			if (_isSubmitDiskSpaceUsed)
 			{
 				Info("\tDisk Space Used: {0:N0} bytes", spaceUsed);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("DiskSpaceUsed")
-							.WithUnit("Bytes")
-							.WithValue(spaceUsed)
-							.WithDimensions(dimensions));
+                metrics.Add(new MetricDatum
+                {
+                    MetricName = "DiskSpaceUsed",
+                    Unit = "Bytes",
+                    Value = spaceUsed,
+                    Dimensions = dimensions
+                });
 			}
 
 			if (_isSubmitDiskSpaceAvailable)
 			{
 				Info("\tDisk Space Available: {0:N0} bytes", spaceAvailable);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("DiskSpaceAvailable")
-							.WithUnit("Bytes")
-							.WithValue(spaceAvailable)
-							.WithDimensions(dimensions));
+                metrics.Add(new MetricDatum
+                {
+                    MetricName = "DiskSpaceAvailable",
+                    Unit = "Bytes",
+                    Value = spaceAvailable,
+                    Dimensions = dimensions
+                });
 			}
 
 			if (_isSubmitDiskSpaceUtilization)
 			{
 				Info("\tDisk Space Utilization: {0:F1}%", diskUtilized);
-				metrics.Add(new Amazon.CloudWatch.Model.MetricDatum()
-							.WithMetricName("DiskSpaceUtilization")
-							.WithUnit("Percent")
-							.WithValue(diskUtilized)
-							.WithDimensions(dimensions));
+                metrics.Add(new MetricDatum
+                {
+                    MetricName = "DiskSpaceUtilization",
+                    Unit = "Percent",
+                    Value = spaceAvailable,
+                    Dimensions = dimensions
+                });
 			}
 		}
 
@@ -581,7 +580,7 @@ namespace CloudWatchMonitor
 			try
 			{
 				// Get the instance id
-				Uri uri = new Uri("http://169.254.169.254/latest/meta-data/instance-id");
+				var uri = new Uri("http://169.254.169.254/latest/meta-data/instance-id");
 
 				var client = new System.Net.WebClient();
 				_instanceId = client.DownloadString(uri);
@@ -606,8 +605,7 @@ namespace CloudWatchMonitor
 			try
 			{
 				// Get the instance id
-				Uri uri = new Uri("http://169.254.169.254/latest/meta-data/placement/availability-zone");
-
+				var uri = new Uri("http://169.254.169.254/latest/meta-data/placement/availability-zone");
 				var client = new System.Net.WebClient();
 				availabilityZone = client.DownloadString(uri);
 
@@ -623,7 +621,6 @@ namespace CloudWatchMonitor
 			// This is ok now, but perhaps not in the future.
 			_region = availabilityZone.Substring(0, availabilityZone.Length - 1);
 			Info("Region: {0}", _region);
-
 			return true;
 		}
 	}
