@@ -514,7 +514,7 @@ namespace CloudWatchMonitor
 
 			var dimensions = new List<Dimension>
 			{
-			    new Dimension {Name = "InstanceID", Value = _instanceId},
+			    new Dimension {Name = "InstanceId", Value = _instanceId},
 			    new Dimension {Name = "Drive", Value = driveName}
 			};
 
