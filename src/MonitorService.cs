@@ -390,8 +390,8 @@ namespace CloudWatchMonitor
 			    metrics.Add(new MetricDatum
 			    {
 			        MetricName = "PhysicalMemoryUtilization",
-			        Unit = "Bytes",
-			        Value = physicalMemoryUsed,
+			        Unit = "Percent",
+			        Value = physicalMemoryUtilized,
 			        Dimensions = dimensions
 			    });
 			}
@@ -433,7 +433,7 @@ namespace CloudWatchMonitor
 				
                 metrics.Add(new MetricDatum
 			    {
-			        MetricName = "VirtualMemoryAvailable",
+			        MetricName = "VirtualMemoryUtilization",
 			        Unit = "Percent",
 			        Value = virtualMemoryUtilized,
 			        Dimensions = dimensions
@@ -563,7 +563,7 @@ namespace CloudWatchMonitor
                 {
                     MetricName = "DiskSpaceUtilization",
                     Unit = "Percent",
-                    Value = spaceAvailable,
+                    Value = diskUtilized,
                     Dimensions = dimensions
                 });
 			}
